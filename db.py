@@ -1,6 +1,6 @@
 import psycopg2
 from psycopg2 import pool
-from services.normal_service2 import migrate_data
+from services.normal_service import migrate_data
 
 connection_pool = psycopg2.pool.SimpleConnectionPool(
             minconn=1,

@@ -1,117 +1,171 @@
-# from ..db import get_db_connection
-from db import get_db_connection
-import psycopg2
 
-def normalize_db():
-    source_conn = get_db_connection()
-    target_conn = psycopg2.connect(
-        dbname="normal_db",
-        user="omermunk",
-        password="1234",
-        host="localhost",
-        port="5432"
-    )
+def migrate_data(conn):
+    try:
+        with conn.cursor() as cur:
 
-    try :
-        query1 = """
-            CREATE TABLE customers (
-                    customer_id SERIAL PRIMARY KEY,
-                    customer_name VARCHAR(100),
-                    address VARCHAR(255),
-                    city VARCHAR(100)
-            )
-        """
-        query2 = """
-            CREATE TABLE phone_numbers (
-                phone_id SERIAL PRIMARY KEY,
-                customer_id INT REFERENCES customers(customer_id),
-                phone_number VARCHAR(10)
-            )
-        """
+            cur.execute("""
+                SELECT 
+                    mission_id, target_country, target_city, 
+                    target_latitude, target_longitude, 
+                    target_type, target_industry, target_priority 
+                FROM mission;
+            """)
+            rows = cur.fetchall()
+            for row in rows:
+                row_dict = {
+                    'mission_id': row[0],
+                    'target_country': row[1],
+                    'target_city': row[2],
+                    'target_latitude': row[3],
+                    'target_longitude': row[4],
+                    'target_type': row[5],
+                    'target_industry': row[6],
+                    'target_priority': row[7]
+                }
 
-        query3 = """
-            CREATE TABLE products (
-                product_id SERIAL PRIMARY KEY,
-                product_name VARCHAR(100),
-                supplier_id INT REFERENCES suppliers(supplier_id),
-                price NUMERIC(10, 2)
-            )
-        """
-
-
-        query4 = """
-            CREATE TABLE categories (
-                category_id SERIAL PRIMARY KEY,
-                category_name VARCHAR(100)
-            )
-        """
-
-
-        query5 = """
-            CREATE TABLE products_categories (
-                product_id INT REFERENCES products(product_id),
-                category_id INT REFERENCES categories(category_id),
-                primary key (product_id, category_id)
-            )
-        """
-
-
-        query6 = """
-            CREATE TABLE suppliers (
-                supplier_id SERIAL PRIMARY KEY,
-                supplier_name VARCHAR(100)
-            )
-        """
-
-
-        query7 = """
-            CREATE TABLE orders (
-                order_id SERIAL PRIMARY KEY,
-                customer_id INT references customers(customer_id),
-                order_date DATE
-            )
-        """
-
-        query8 = """
-            CREATE TABLE order_products (
-                order_id INT REFERENCES orders(order_id),
-                product_id INT REFERENCES products(product_id),
-                quantity INT,
-                primary key (order_id, product_id)
-            )
-        """
-
-        # execute the queries
-        cur = target_conn.cursor()
-        cur.executemany([query1, query2, query3, query4, query5, query6, query7, query8])
-        target_conn.commit()
-
-        s_cur = source_conn.cursor()
-        s_cur.execute("SELECT * FROM customers")
-        while True:
-            customer_row = s_cur.fetchone()
-            if customer_row is None:
-                break
-
-            customer_name = customer_row[1]
-            address = customer_row[3]
-            city = customer_row[4]
-            phone_numbers = customer_row[2].split(",")
-
-            cur.execute("INSERT INTO customers (customer_name, address, city)"
-                        " VALUES (%s, %s, %s) RETURNING customer_id",
-                        (customer_name, address, city))
-            customer_id = cur.fetchone()[0]
-
-            for phone_number in phone_numbers:
-                cur.execute("INSERT INTO phone_numbers (customer_id, phone_number)"
-                            " VALUES (%s, %s)", (customer_id, phone_number))
+                target_country = row_dict['target_country']
+                target_city = row_dict['target_city']
+                location_id = insert_or_find_location(cur, target_country, target_city)
 
 
 
+                target_latitude = row_dict['target_latitude']
+                target_longitude = row_dict['target_longitude']
+                coordinates_id = insert_or_find_coordinates(cur, target_latitude, target_longitude)
 
+
+
+                target_type = row_dict['target_type']
+                target_industry = row_dict['target_industry']
+                target_priority = row_dict['target_priority']
+
+
+                new_target_id = insert_or_find_target(cur, target_type, target_industry, target_priority, location_id, coordinates_id)
+
+                cur.execute("""
+                        UPDATE mission 
+                        SET target_id = %s 
+                        WHERE mission_id = %s;
+                    """, (new_target_id, row_dict['mission_id']))
+
+                conn.commit()
+            cur.execute("""
+                ALTER TABLE mission
+                    DROP COLUMN target_country,
+                    DROP COLUMN target_city,
+                    DROP COLUMN target_latitude,
+                    DROP COLUMN target_longitude, 
+                    DROP COLUMN target_type,
+                    DROP COLUMN target_industry,
+                    DROP COLUMN target_priority
+            """)
+            conn.commit()
 
     except Exception as e:
-        pass
-    finally:
-        pass
+        conn.rollback()
+        print(f"An error occurred: {e}")
+
+
+def insert_or_find_location(cur, target_country, target_city):
+    if target_country is None and target_city is None:
+        cur.execute("""
+            SELECT id FROM location 
+            WHERE country IS NULL AND city IS NULL;
+        """)
+    elif target_country is None:
+        cur.execute("""
+            SELECT id FROM location 
+            WHERE country IS NULL AND city = %s;
+        """, (target_city,))
+    elif target_city is None:
+        cur.execute("""
+            SELECT id FROM location 
+            WHERE country = %s AND city IS NULL;
+        """, (target_country,))
+    else:
+        cur.execute("""
+            SELECT id FROM location 
+            WHERE country = %s AND city = %s;
+        """, (target_country, target_city))
+
+    location_row = cur.fetchone()
+
+    if location_row:
+        location_id = location_row[0]
+    else:
+        cur.execute("""
+                          INSERT INTO location (country, city) 
+                          VALUES (%s, %s) 
+                          RETURNING id;
+                      """, (target_country, target_city))
+        location_id = cur.fetchone()[0]
+
+    return location_id
+
+def insert_or_find_coordinates(cur, target_latitude, target_longitude):
+    if target_latitude is None and target_longitude is None:
+        cur.execute("""
+            SELECT id FROM coordinates 
+            WHERE latitude IS NULL AND longitude IS NULL;
+        """)
+    elif target_latitude is None:
+        cur.execute("""
+            SELECT id FROM coordinates 
+            WHERE latitude IS NULL AND longitude = %s;
+        """, (target_longitude,))
+    elif target_longitude is None:
+        cur.execute("""
+            SELECT id FROM coordinates 
+            WHERE latitude = %s AND longitude IS NULL;
+        """, (target_latitude,))
+    else:
+        cur.execute("""
+            SELECT id FROM coordinates 
+            WHERE latitude = %s AND longitude = %s;
+        """, (target_latitude, target_longitude))
+
+    coordinates_row = cur.fetchone()
+
+    if coordinates_row:
+        coordinates_id = coordinates_row[0]
+    else:
+        cur.execute("""
+                          INSERT INTO coordinates (latitude, longitude) 
+                          VALUES (%s, %s) 
+                          RETURNING id;
+                      """, (target_latitude, target_longitude))
+        coordinates_id = cur.fetchone()[0]
+
+    return coordinates_id
+
+def insert_or_find_target(cur, target_type, target_industry, target_priority, location_id, coordinates_id):
+    cur.execute(""" 
+        SELECT target_id FROM target_details 
+        WHERE (target_type = %s OR (target_type IS NULL AND %s IS NULL)) 
+          AND (target_industry = %s OR (target_industry IS NULL AND %s IS NULL)) 
+          AND (target_priority = %s OR (target_priority IS NULL AND %s IS NULL)) 
+          AND location_id = %s 
+          AND coordinates_id = %s;
+    """, (
+        target_type, target_type,
+        target_industry, target_industry,
+        target_priority, target_priority,
+        location_id,
+        coordinates_id
+    ))
+    target_row = cur.fetchone()
+
+    if target_row:
+        new_target_id = target_row[0]
+    else:
+        cur.execute("""
+                          INSERT INTO target_details (target_type, target_industry, target_priority, location_id, coordinates_id) 
+                          VALUES (%s, %s, %s, %s, %s)
+                          RETURNING target_id;
+                      """, (
+            target_type, target_industry,
+            target_priority, location_id, coordinates_id
+        ))
+        new_target_id = cur.fetchone()[0]
+
+    return new_target_id
